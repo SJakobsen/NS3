@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 
 // PORT that the server will listen to
 #define PORT 8080
@@ -12,7 +13,11 @@
 // Max message size that the server will accept
 #define BUFLEN 1500
 
-// COMMON HTTP RESPONSE CODES //
+#define HOST_NAME_MAX 255
+
+// COMMON HTTP RESPONSES //
+// To be expanded upon in later functions
+#define RESPONSE_200_HEADER "HTTP/1.1 200 OK\r\n"
 // Response when file not found, taken from assignment sheet 
 #define RESPONSE_404 "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 404 Not Found </title>\r\n</head>\r\n<body>\r\n<p> The requested file cannot be found. </p>\r\n</body>\r\n</html>"
 // Response when a request cannot be unserstood
@@ -26,11 +31,12 @@
 // splitmsg points to an array that will contain an array for each line in the newly split message. Lot of stars...
 // Lines will be split with the assumption that a line ends end with '\r\n'
 // Hence the final header would end with '\r\n\r\n'
-int split_HTTP_message(char *msg, char ***splitmsg);
+int split_HTTP_message(char *msg, char ***splitmsg, int fd);
 
-void send_400_response();
-void send_404_response();
-void send_500_response();
+void send_200_response(int fd);
+void send_400_response(int fd);
+void send_404_response(int fd);
+void send_500_response(int fd);
 
 int main(void) {
 	
@@ -90,16 +96,17 @@ int main(void) {
 	}
 	else {
 		char **splitmsg;
-		int linenum = split_HTTP_message(buf, &splitmsg);
+		// Print message to console
+		printf("%s\n", buf);
+		
+		int linenum = split_HTTP_message(buf, &splitmsg, connfd);
+		
 		/*
 		int i = 0;
 		for(; i<linenum; i++){
 			printf("%s\n", *(splitmsg+i));
 		}
 		*/
-		
-		// Print message to console
-		printf("%s\n", buf);
 		
 		free(splitmsg);
 	}
@@ -115,7 +122,7 @@ int main(void) {
 // splitmsg points to an array that will contain an array for each line in the newly split message.  Lot of stars...
 // Lines will be split with the assumption that a line ends end with '\r\n'
 // Hence the final header would end with '\r\n\r\n'
-int split_HTTP_message(char *msg, char ***splitmsg) {
+int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
 	char *current = msg;
 	int msglen = strlen(msg);
@@ -144,7 +151,7 @@ int split_HTTP_message(char *msg, char ***splitmsg) {
 	// If end of headers does not contain '\r\n\r\n', bad message.
 	// If no lines, bad message
 	if (!endreached || !linenum) {
-		send_400_response();
+		send_400_response(fd);
 		printf("Bad request\n");
 		return -1;
 	}
@@ -156,41 +163,28 @@ int split_HTTP_message(char *msg, char ***splitmsg) {
 	// Handle malloc error
 	if (*splitmsg == NULL) {
 		printf("Error allocating space for splitmsg");
-		send_500_response();
+		send_500_response(fd);
 		return -1;
 	}
 	
 	// At this point, there should be at least one line to be added to splitmsg
-	printf("Num lines: %d\n", linenum);
-	current = msg;
-	// This will point to the start of each line
-	char *start = msg;
-	int diff = current-start;
-	printf("%d\n", diff);
-	for (pos = 0; pos<linenum; pos++) {
-		while (strncmp(current, "\r\n", strlen("\r\n"))) {
-			current++;
-			diff = current-start;
-			printf ("NO [%d]", diff);
-		}
-		printf("Adding new line\n");
-		diff = current-start;
-		printf("Line size: %d\n", diff);
-		// Line in splitmsg is substring from start to current
-		char *temp = NULL;
-		strncpy(temp, start, current-start); 
-		strcat(temp, "\0");
-		*(*splitmsg+pos) = temp;
-		printf("%lu\n", strlen(*(*splitmsg+pos)));
-		// Point start to beginning of next line if it were to exist
-		start = current + strlen("\r\n");
-		current++;
-	}
+	current = strtok(msg, "\r\n");
 	
-	int i = 0;
-	for(; i<linenum; i++){
-		printf("%s\n", *(*(splitmsg)+i));
-	}
+		// Covering my ass
+		if (current == NULL){
+			fprintf(stderr, "No delimiter found in HTTP request\n");
+			fprintf(stderr,"Request: %s\n", msg);
+			free(*splitmsg);
+			send_400_response(fd);
+			return -1;
+		}
+		
+		**splitmsg = current;
+		int i=1;
+		for(; i<linenum && current != NULL; i++){
+			current = strtok(NULL, "\r\n");
+			*(*splitmsg+i) = current;
+		}
 	
 	return linenum;
 }
@@ -201,18 +195,90 @@ int get_file(char *line) {
 }
 */
 
-int check_hostname() {
+int check_hostname(char **splitmsg, int lines, int fd) {
+	
+	// Go through each line looking for "host: "
+	char *line;
+	int found = 0;
+	int i=0;
+	for(; i<lines; i++) {
+		line = *(splitmsg+i);
+		if (!strncmp(line, "host: ", 6)) {
+			// Mark as found, line now contains hostname
+			found = 1;
+			break;
+		}
+	}
+	
+	// If host not in headers, don't need to worry about it
+	if (!found) return 1;
+	
+	int check = 0;
+	// USING HOST_NAME_MAX
+	// SEE THIS ANSWER FROM STACKOVERFLOW
+	// http://stackoverflow.com/a/8724971
+	char hostname[HOST_NAME_MAX + 1];
+	check = gethostname(hostname, HOST_NAME_MAX);
+	if (check<0) {
+		fprintf(stderr, "Error getting hostname.");
+		send_500_response(fd);
+		return -1;
+	}
+	
+	// If hostnames match return true
+	if(!strncmp(line+6, hostname, HOST_NAME_MAX)) return 1;
+	
 	return 0;
 }
 
-void send_400_response() {
+void handle_GET(char **splitmsg, int lines, int fd) {
+	// This line should contain a GET request
+	char *line = *splitmsg;
+
+	if(!strncmp(line, "GET ", 4)) {
+		// TODO
+	}
+	// Treating a failure here as a bad request - from the specifications of the task
+	// Though in reality, a POST would have been a valid request that would be rejected
+	// The alternative would be sending an HTTP 500 response, because that's kinda my fault
+	else {
+		fprintf(stderr, "Error handling GET request.");
+		send_400_response(fd);
+		return;
+	}
+}
+
+void send_200_response(int fd) {
+	
+	close(fd);
 	
 }
 
-void send_404_response() {
+void send_400_response(int fd) {
+	int check;
+	check = write(fd, RESPONSE_400, strlen(RESPONSE_400));
+	if(check<0){
+		fprintf(stderr, "Error sending response: 400\n");
+	}
+	close(fd);
 	
 }
 
-void send_500_response() {
+void send_404_response(int fd) {
+	int check;
+	check = write(fd, RESPONSE_404, strlen(RESPONSE_404));
+	if(check<0){
+		fprintf(stderr, "Error sending response: 404\n");
+	}
+	close(fd);
 	
+}
+
+void send_500_response(int fd) {
+	int check;
+	check = write(fd, RESPONSE_500, strlen(RESPONSE_500));
+	if(check<0){
+		fprintf(stderr, "Error sending response: 500\n");
+	}
+	close(fd);
 }
