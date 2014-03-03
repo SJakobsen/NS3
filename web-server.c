@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <limits.h>
 
 // PORT that the server will listen to
 #define PORT 8080
@@ -14,6 +13,7 @@
 #define BUFLEN 1500
 
 #define HOST_NAME_MAX 255
+#define FILE_NAME_MAX 255
 
 // COMMON HTTP RESPONSES //
 // To be expanded upon in later functions
@@ -32,6 +32,8 @@
 // Lines will be split with the assumption that a line ends end with '\r\n'
 // Hence the final header would end with '\r\n\r\n'
 int split_HTTP_message(char *msg, char ***splitmsg, int fd);
+
+char *get_filename(char *GETline, int fd);
 
 void send_200_response(int fd);
 void send_400_response(int fd);
@@ -100,6 +102,10 @@ int main(void) {
 		printf("%s\n", buf);
 		
 		int linenum = split_HTTP_message(buf, &splitmsg, connfd);
+		
+		char *filename = get_filename(*splitmsg, connfd);
+		
+		printf("Parsed file: %s\n", filename);
 		
 		/*
 		int i = 0;
@@ -231,22 +237,76 @@ int check_hostname(char **splitmsg, int lines, int fd) {
 	return 0;
 }
 
-void handle_GET(char **splitmsg, int lines, int fd) {
-	// This line should contain a GET request
-	char *line = *splitmsg;
-
-	if(!strncmp(line, "GET ", 4)) {
-		// TODO
+char *get_filename(char *GETline, int fd) {
+	char *get;
+	char *filename;
+	char *protocol;
+	
+	// Allow room for "GET\0"
+	get = malloc(sizeof(char)*4);
+	if (get == NULL) {
+		fprintf(stderr, "Error allocating space for GET request in get_filename.");
+		free(get);
+		send_500_response(fd);
+		return NULL;
 	}
-	// Treating a failure here as a bad request - from the specifications of the task
-	// Though in reality, a POST would have been a valid request that would be rejected
-	// The alternative would be sending an HTTP 500 response, because that's kinda my fault
-	else {
-		fprintf(stderr, "Error handling GET request.");
+	
+	filename = malloc(sizeof(char)*(FILE_NAME_MAX+1));
+	if (filename == NULL) {
+		fprintf(stderr, "Error allocating space for filename in get_filename.");
+		free(filename);
+		send_500_response(fd);
+		return NULL;
+	}
+	
+	// Allow room for "HTTP/1.1\0"
+	protocol = malloc(sizeof(char)*9);
+	if (protocol == NULL) {
+		fprintf(stderr, "Error allocating space for protocol in get_filename.");
+		free(protocol);
+		send_500_response(fd);
+		return NULL;
+	}
+	
+	// Split line into the three strings it should be made up of
+	// Ref: "GET /index.html HTTP/1.1"
+	int check = sscanf(GETline, "%3s %s %s", get, filename, protocol);
+	
+	// Expecting 3 arguments, if that's not the case, bad request
+	if (check != 3) {
+		fprintf(stderr, "Error parsing GET line.  Invalid line, bad arguments.");
 		send_400_response(fd);
-		return;
 	}
+	
+	// Ensure GET request
+	if (strncmp(get, "GET", 3) != 0) {
+		fprintf(stderr, "Request is not a GET.");
+		send_400_response(fd);
+	}
+	
+	free(get);
+	free(protocol);
+	return filename;
 }
+
+char *read_file(char *filename, int fd) {
+	FILE *file;
+	char *data;
+	
+	// This will look for files in same directory as the server, assuming server is compiled into same directory as .c file
+	file = fopen(filename, "r");
+	// Handle fail case (404 error)
+	if (file == NULL) {
+		fprintf(stderr, "Error opening %s.", filename);
+		send_404_response(fd);
+		return NULL;
+	}
+	
+	data = NULL;
+	return data;
+}
+
+// HTTP RESPONSES //
 
 void send_200_response(int fd) {
 	
