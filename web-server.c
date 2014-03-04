@@ -36,7 +36,7 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd);
 char *get_filename(char *GETline, int fd);
 char *read_file(char *filename, int fd);
 
-void send_200_response(int fd);
+int send_200_response(int fd, char *data, char *extension);
 void send_400_response(int fd);
 void send_404_response(int fd);
 void send_500_response(int fd);
@@ -57,6 +57,7 @@ int main(void) {
 	if (fd == -1) {
 		// an error occurred
 		fprintf(stderr, "Error creating socket");
+		return -1;
 	}
 	
 	// BIND SOCKET TO PORT
@@ -68,6 +69,7 @@ int main(void) {
 	if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
 		// an error occurred
 		fprintf(stderr, "Error binding socket to port.\n");
+		return -1;
 	}
 
 	// LISTEN FOR CONNECTIONS
@@ -75,63 +77,95 @@ int main(void) {
 	if (listen(fd, backlog) == -1) {
 		// an error occurred
 		fprintf(stderr, "Error listening for connections.\n");
+		return -1;
 	}
+	
+	printf("Server started.\n");
 
 	// ACCEPTING CONNECTIONS
 	
-	socklen_t cliaddr_len = sizeof(cliaddr);
+	while (1) {
+		socklen_t cliaddr_len = sizeof(cliaddr);
 
-	connfd = accept(fd, (struct sockaddr *) &cliaddr, &cliaddr_len);
-	if (connfd == -1) {
-		// an error occurred
-		fprintf(stderr, "Error accepting connection.\n");
-	}
+		connfd = accept(fd, (struct sockaddr *) &cliaddr, &cliaddr_len);
+		if (connfd == -1) {
+			// an error occurred
+			fprintf(stderr, "Error accepting connection.\n");
+			close(connfd);
+			continue;
+		}
+		else if (connfd == 0) {
+			fprintf(stderr, "Connection closed by client.\n");
+			close(connfd);
+			continue;
+		}
 
-	// HANDLE CONNECTION
+		// HANDLE CONNECTION
 
-	ssize_t rcount;
-	char buf[BUFLEN];
+		ssize_t rcount;
+		char buf[BUFLEN];
 
-	rcount = read(connfd, buf, BUFLEN);
-	if (rcount == -1) {
-		// An error occurred
-		fprintf(stderr, "Error printing received data.\n");
-	}
-	else {
-		char **splitmsg;
-		// DEBUGGING
-		printf("%s\n", buf);
+		rcount = read(connfd, buf, BUFLEN);
+		if (rcount == -1) {
+			// An error occurred
+			fprintf(stderr, "Error printing received data.\n");
+		}
+		else {
+			char **splitmsg;
+			// DEBUGGING
+			// printf("%s\n", buf);
 		
-		int linenum = split_HTTP_message(buf, &splitmsg, connfd);
-		if (linenum < 0) {
-			printf("Failure at split_HTTP_message. HANDLE ME\n");
+			int linenum = split_HTTP_message(buf, &splitmsg, connfd);
+			if (linenum < 0) {
+				printf("Failure at split_HTTP_message. HANDLE ME\n");
+				close(connfd);
+				continue;
+			}
+		
+			char *filename = get_filename(*splitmsg, connfd);
+			if (filename == NULL) {
+				printf("Failure at get_filename. HANDLE ME\n");
+				close(connfd);
+				continue;
+			}
+			// DEBUGGING
+			// printf("Parsed file: %s\n", filename);
+		
+			char *data = read_file(filename, connfd);
+			if (data == NULL) {
+				printf("Failure at read_file. HANDLE ME\n");
+				close(connfd);
+				continue;
+			}
+			// DEBUGGING
+			// printf("Read data:\n%s\n", data);
+		
+			// Read file extension in order to send appropriate response
+			char *extension = strrchr(filename, '.');
+			if (extension == NULL) {
+				fprintf(stderr, "Error reading file extension.");
+				free(filename);
+				free(data);
+				send_400_response(connfd);
+				continue;
+			}
+			else {
+				extension++;
+			
+				// DEBUGGING
+				printf("Extension: %s\n", extension);
+			
+				int success = send_200_response(connfd, data, extension);
+				if (!success) {
+					fprintf(stderr, "Failed to send 200 response.\n");
+					continue;
+				}
+				else printf("200 response sent.\n");
+			
+			}
+		
 		}
 		
-		char *filename = get_filename(*splitmsg, connfd);
-		if (filename == NULL) {
-			printf("Failure at get_filename. HANDLE ME\n");
-		}
-		// DEBUGGING
-		printf("Parsed file: %s\n", filename);
-		
-		char *data = read_file(filename, connfd);
-		if (data == NULL) {
-			printf("Failure at read_file. HANDLE ME\n");
-		}
-		// DEBUGGING
-		printf("Read data:\n%s\n", data);
-		
-		
-		
-		
-		/*
-		int i = 0;
-		for(; i<linenum; i++){
-			printf("%s\n", *(splitmsg+i));
-		}
-		*/
-		
-		free(splitmsg);
 	}
 	
 	close(connfd);
@@ -141,10 +175,6 @@ int main(void) {
 	
 }
 
-// message is message server has received received
-// splitmsg points to an array that will contain an array for each line in the newly split message.  Lot of stars...
-// Lines will be split with the assumption that a line ends end with '\r\n'
-// Hence the final header would end with '\r\n\r\n'
 int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
 	char *current = msg;
@@ -273,6 +303,7 @@ char *get_filename(char *GETline, int fd) {
 	filename = malloc(sizeof(char)*(FILE_NAME_MAX+3));
 	if (filename == NULL) {
 		fprintf(stderr, "Error allocating space for filename in get_filename.\n");
+		free(get);
 		free(filename);
 		send_500_response(fd);
 		return NULL;
@@ -282,6 +313,8 @@ char *get_filename(char *GETline, int fd) {
 	protocol = malloc(sizeof(char)*9);
 	if (protocol == NULL) {
 		fprintf(stderr, "Error allocating space for protocol in get_filename.\n");
+		free(get);
+		free(filename);
 		free(protocol);
 		send_500_response(fd);
 		return NULL;
@@ -289,19 +322,38 @@ char *get_filename(char *GETline, int fd) {
 	
 	// Split line into the three strings it should be made up of
 	// Ref: "GET /index.html HTTP/1.1"
-	// Want rid of the '/' in the filename
-	int check = sscanf(GETline, "%3s /%s %s", get, filename, protocol);
+	int check = sscanf(GETline, "%3s %s %s", get, filename, protocol);
+	// Skip over "/" in filename.
+	filename++;
+	// Handle edge case "GET / HTTP/1.1"
+	// Alternatively, could set filename to be index.html in this case
+	if (strncmp(filename, "", 1) == 0) {
+		fprintf(stderr, "Request must include a filename.");
+		free(get);
+		free(filename);
+		free(protocol);
+		send_400_response(fd);
+		return NULL;
+	}
 	
 	// Expecting 3 arguments, if that's not the case, bad request
 	if (check != 3) {
 		fprintf(stderr, "Error parsing GET line.  Invalid line, bad arguments.\n");
+		free(get);
+		free(filename);
+		free(protocol);
 		send_400_response(fd);
+		return NULL;
 	}
 	
 	// Ensure GET request
 	if (strncmp(get, "GET", 3) != 0) {
 		fprintf(stderr, "Request is not a GET.\n");
+		free(get);
+		free(filename);
+		free(protocol);
 		send_400_response(fd);
+		return NULL;
 	}
 	
 	free(get);
@@ -317,7 +369,6 @@ char *read_file(char *filename, int fd) {
 	
 	// This will look for files in same directory as the server, assuming server is compiled into same directory as .c file
 	// Reading as a binary file, hence 'rb' (file could be image etc.)
-	system("pwd\n");
 	file = fopen(filename, "rb");
 	// Handle fail case (404 error)
 	if (file == NULL) {
@@ -361,37 +412,97 @@ char *read_file(char *filename, int fd) {
 
 // HTTP RESPONSES //
 
-void send_200_response(int fd) {
+int send_200_response(int fd, char *data, char *extension) {
+	int size;
+	int check;
+	char *contentlength;
+	char *contenttype;
 	
-	close(fd);
+	contentlength = malloc((18 + 10) * sizeof(char));
+	if (contentlength == NULL) {
+		fprintf(stderr, "Error allocating space for content length header.");
+		free(contentlength);
+		send_500_response(fd);
+		return 0;
+	}
 	
+	size = strlen(data);
+	check = sprintf(contentlength, "Content-Length: %i\r\n", size);
+	
+	if (!strncmp(extension, "html", 4)) contenttype = "Content-Type: text/html\r\n\r\n";
+	else if (!strncmp(extension, "htm", 3)) contenttype = "Content-Type: text/html\r\n\r\n";
+	else if (!strncmp(extension, "txt", 3)) contenttype = "Content-Type: text/plain\r\n\r\n";
+	else if (!strncmp(extension, "jpeg", 4)) contenttype = "Content-Type: image/jpeg\r\n\r\n";
+	else if (!strncmp(extension, "jpg", 3)) contenttype = "Content-Type: image/jpeg\r\n\r\n";
+	else if (!strncmp(extension, "gif", 3)) contenttype = "Content-Type: image/gif\r\n\r\n";
+	else contenttype = "Content-Type: application/octet-stream\r\n\r\n";
+
+	printf("Content length header: %s", contentlength);
+	printf("Content type header: %s", contenttype);
+	
+	char *response = malloc(sizeof(RESPONSE_200_HEADER) + sizeof(contentlength) + sizeof(contenttype) + size);
+	if (response == NULL) {
+		fprintf(stderr, "Error allocating space for HTTP 200 Response.");
+		free(contentlength);
+		free(response);
+		send_500_response(fd);
+		return 0;
+	}
+	
+	strcpy(response, RESPONSE_200_HEADER);
+	strcat(response, contentlength);
+	strcat(response, contenttype);
+	
+	int current = strlen(response);
+	memcpy(response+current, data, size+1);
+	
+	check = write(fd, response, current+size);
+	if (check < 0) {
+		fprintf(stderr, "Error sending 200 response.");
+		free(contentlength);
+		free(response);
+		send_500_response(fd);
+		return 0;
+	}
+	
+	// DEBUGGING
+	printf("\n////// 200 response: //////\n");
+	printf("%s\n", response);
+	
+	free(contentlength);
+	free(response);
+	return 1;
 }
 
 void send_400_response(int fd) {
+	printf("////// Sending 400 response. //////\n");
 	int check;
 	check = write(fd, RESPONSE_400, strlen(RESPONSE_400));
 	if(check<0){
-		fprintf(stderr, "Error sending response: 400\n");
+		fprintf(stderr, "Error sending 400 response.\n");
 	}
 	close(fd);
-	
+	return;
 }
 
 void send_404_response(int fd) {
+	printf("////// Sending 404 response. //////\n");
 	int check;
 	check = write(fd, RESPONSE_404, strlen(RESPONSE_404));
 	if(check<0){
-		fprintf(stderr, "Error sending response: 404\n");
+		fprintf(stderr, "Error sending 404 response.\n");
 	}
 	close(fd);
-	
+	return;
 }
 
 void send_500_response(int fd) {
+	printf("////// Sending 500 response. //////\n");
 	int check;
 	check = write(fd, RESPONSE_500, strlen(RESPONSE_500));
 	if(check<0){
-		fprintf(stderr, "Error sending response: 500\n");
+		fprintf(stderr, "Error sending 500 response.\n");
 	}
 	close(fd);
+	return;
 }
