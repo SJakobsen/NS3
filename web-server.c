@@ -34,6 +34,7 @@
 int split_HTTP_message(char *msg, char ***splitmsg, int fd);
 
 char *get_filename(char *GETline, int fd);
+char *read_file(char *filename, int fd);
 
 void send_200_response(int fd);
 void send_400_response(int fd);
@@ -55,7 +56,7 @@ int main(void) {
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd == -1) {
 		// an error occurred
-		printf("Error creating socket");
+		fprintf(stderr, "Error creating socket");
 	}
 	
 	// BIND SOCKET TO PORT
@@ -66,14 +67,14 @@ int main(void) {
 
 	if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
 		// an error occurred
-		printf("Error binding socket to port.\n");
+		fprintf(stderr, "Error binding socket to port.\n");
 	}
 
 	// LISTEN FOR CONNECTIONS
 
 	if (listen(fd, backlog) == -1) {
 		// an error occurred
-		printf("Error listening for connections.\n");
+		fprintf(stderr, "Error listening for connections.\n");
 	}
 
 	// ACCEPTING CONNECTIONS
@@ -83,7 +84,7 @@ int main(void) {
 	connfd = accept(fd, (struct sockaddr *) &cliaddr, &cliaddr_len);
 	if (connfd == -1) {
 		// an error occurred
-		printf("Error accepting connection.\n");
+		fprintf(stderr, "Error accepting connection.\n");
 	}
 
 	// HANDLE CONNECTION
@@ -94,18 +95,34 @@ int main(void) {
 	rcount = read(connfd, buf, BUFLEN);
 	if (rcount == -1) {
 		// An error occurred
-		printf("Error printing received data.\n");
+		fprintf(stderr, "Error printing received data.\n");
 	}
 	else {
 		char **splitmsg;
-		// Print message to console
+		// DEBUGGING
 		printf("%s\n", buf);
 		
 		int linenum = split_HTTP_message(buf, &splitmsg, connfd);
+		if (linenum < 0) {
+			printf("Failure at split_HTTP_message. HANDLE ME\n");
+		}
 		
 		char *filename = get_filename(*splitmsg, connfd);
-		
+		if (filename == NULL) {
+			printf("Failure at get_filename. HANDLE ME\n");
+		}
+		// DEBUGGING
 		printf("Parsed file: %s\n", filename);
+		
+		char *data = read_file(filename, connfd);
+		if (data == NULL) {
+			printf("Failure at read_file. HANDLE ME\n");
+		}
+		// DEBUGGING
+		printf("Read data:\n%s\n", data);
+		
+		
+		
 		
 		/*
 		int i = 0;
@@ -158,7 +175,7 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	// If no lines, bad message
 	if (!endreached || !linenum) {
 		send_400_response(fd);
-		printf("Bad request\n");
+		fprintf(stderr, "Bad request\n");
 		return -1;
 	}
 	
@@ -168,7 +185,7 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
 	// Handle malloc error
 	if (*splitmsg == NULL) {
-		printf("Error allocating space for splitmsg");
+		fprintf(stderr, "Error allocating space for splitmsg.\n");
 		send_500_response(fd);
 		return -1;
 	}
@@ -226,7 +243,7 @@ int check_hostname(char **splitmsg, int lines, int fd) {
 	char hostname[HOST_NAME_MAX + 1];
 	check = gethostname(hostname, HOST_NAME_MAX);
 	if (check<0) {
-		fprintf(stderr, "Error getting hostname.");
+		fprintf(stderr, "Error getting hostname.\n");
 		send_500_response(fd);
 		return -1;
 	}
@@ -245,15 +262,17 @@ char *get_filename(char *GETline, int fd) {
 	// Allow room for "GET\0"
 	get = malloc(sizeof(char)*4);
 	if (get == NULL) {
-		fprintf(stderr, "Error allocating space for GET request in get_filename.");
+		fprintf(stderr, "Error allocating space for GET request in get_filename.\n");
 		free(get);
 		send_500_response(fd);
 		return NULL;
 	}
 	
-	filename = malloc(sizeof(char)*(FILE_NAME_MAX+1));
+	// Allow extra space for "./" ... "\0"
+	// Will be assuming all file paths start in directory of "server"
+	filename = malloc(sizeof(char)*(FILE_NAME_MAX+3));
 	if (filename == NULL) {
-		fprintf(stderr, "Error allocating space for filename in get_filename.");
+		fprintf(stderr, "Error allocating space for filename in get_filename.\n");
 		free(filename);
 		send_500_response(fd);
 		return NULL;
@@ -262,7 +281,7 @@ char *get_filename(char *GETline, int fd) {
 	// Allow room for "HTTP/1.1\0"
 	protocol = malloc(sizeof(char)*9);
 	if (protocol == NULL) {
-		fprintf(stderr, "Error allocating space for protocol in get_filename.");
+		fprintf(stderr, "Error allocating space for protocol in get_filename.\n");
 		free(protocol);
 		send_500_response(fd);
 		return NULL;
@@ -270,17 +289,18 @@ char *get_filename(char *GETline, int fd) {
 	
 	// Split line into the three strings it should be made up of
 	// Ref: "GET /index.html HTTP/1.1"
-	int check = sscanf(GETline, "%3s %s %s", get, filename, protocol);
+	// Want rid of the '/' in the filename
+	int check = sscanf(GETline, "%3s /%s %s", get, filename, protocol);
 	
 	// Expecting 3 arguments, if that's not the case, bad request
 	if (check != 3) {
-		fprintf(stderr, "Error parsing GET line.  Invalid line, bad arguments.");
+		fprintf(stderr, "Error parsing GET line.  Invalid line, bad arguments.\n");
 		send_400_response(fd);
 	}
 	
 	// Ensure GET request
 	if (strncmp(get, "GET", 3) != 0) {
-		fprintf(stderr, "Request is not a GET.");
+		fprintf(stderr, "Request is not a GET.\n");
 		send_400_response(fd);
 	}
 	
@@ -292,17 +312,50 @@ char *get_filename(char *GETline, int fd) {
 char *read_file(char *filename, int fd) {
 	FILE *file;
 	char *data;
+	unsigned long size;		// Size of file being requested
+	size_t check;			// Size of read
 	
 	// This will look for files in same directory as the server, assuming server is compiled into same directory as .c file
-	file = fopen(filename, "r");
+	// Reading as a binary file, hence 'rb' (file could be image etc.)
+	system("pwd\n");
+	file = fopen(filename, "rb");
 	// Handle fail case (404 error)
 	if (file == NULL) {
-		fprintf(stderr, "Error opening %s.", filename);
+		perror("");
+		fprintf(stderr, "Error opening %s\n", filename);
 		send_404_response(fd);
 		return NULL;
 	}
 	
-	data = NULL;
+	// obtain file size
+	// taken from example at http://www.cplusplus.com/reference/cstdio/fread/
+	fseek(file , 0 , SEEK_END);
+	size = ftell(file);
+	rewind(file);
+	
+	// Allocate space for file data
+	data = malloc(sizeof(char) * (size + 1));
+	// Handle fail case
+	if (data == NULL) {
+		fprintf(stderr, "Error allocating space for data to be written.\n");
+		fclose(file);
+		free(data);
+		send_500_response(fd);
+		return NULL;
+	}
+	
+	// Read data from file into data buffer
+	check = fread (data, sizeof(char), size, file);
+	// Handle misread
+	if (check != size) {
+		fprintf(stderr, "Error reading from file.\n");
+		fclose(file);
+		free(data);
+		send_500_response(fd);
+		return NULL;
+	}
+	
+	fclose(file);
 	return data;
 }
 
