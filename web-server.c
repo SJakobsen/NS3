@@ -13,6 +13,7 @@
 
 // Max message size that the server will accept
 #define BUFLEN 1500
+#define BACKLOG 100
 
 #define HOST_NAME_MAX 255
 #define FILE_NAME_MAX 255
@@ -21,11 +22,11 @@
 // To be expanded upon in later functions
 #define RESPONSE_200_HEADER "HTTP/1.1 200 OK\r\n"
 // Response when file not found, taken from assignment sheet 
-#define RESPONSE_404 "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 404 Not Found </title>\r\n</head>\r\n<body>\r\n<p> The requested file cannot be found. </p>\r\n</body>\r\n</html>"
+#define RESPONSE_404 "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 404 Not Found </title>\r\n</head>\r\n<body>\r\n<h1> 404 Page Not Found </h1>\r\n<p> The requested file cannot be found. </p>\r\n</body>\r\n</html>"
 // Response when a request cannot be unserstood
-#define RESPONSE_400 "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 400 Bad Request </title>\r\n</head>\r\n<body>\r\n<p> Error 400. Bad Request. </p>\r\n</body>\r\n</html>"
+#define RESPONSE_400 "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 400 Bad Request </title>\r\n</head>\r\n<body>\r\n<h1> 400 Error </h1>\r\n<p> Error 400. Bad Request. </p>\r\n</body>\r\n</html>"
 // Response when I mess up
-#define RESPONSE_500 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 500 Internal Server Errpr </title>\r\n</head>\r\n<body>\r\n<p> Error 500. Internal Server Error, my bad. </p>\r\n</body>\r\n</html>"
+#define RESPONSE_500 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\r\n3\r\n\"http://www.w3.org/TR/html4/strict.dtd\">\r\n<html>\r\n<head>\r\n<title> 500 Internal Server Errpr </title>\r\n</head>\r\n<body>\r\n<h1> 500 Error </h1>\r\n<p> Error 500. Internal Server Error, my bad. </p>\r\n</body>\r\n</html>"
 
 // MY HELPER FUNCTIONS //
 
@@ -58,7 +59,6 @@ int main(void) {
 	// server
 	struct sockaddr_in addr;
 	int fd = 0;
-	int backlog = 10;
 	//client
 	struct sockaddr_in cliaddr;
 	int connfd = 0;
@@ -86,7 +86,7 @@ int main(void) {
 
 	// LISTEN FOR CONNECTIONS
 
-	if (listen(fd, backlog) == -1) {
+	if (listen(fd, BACKLOG) == -1) {
 		// an error occurred
 		fprintf(stderr, "Error listening for connections.\n");
 		return -1;
@@ -106,11 +106,6 @@ int main(void) {
 			close(connfd);
 			continue;
 		}
-		else if (connfd == 0) {
-			fprintf(stderr, "Connection closed by client.\n");
-			close(connfd);
-			continue;
-		}
 
 		// HANDLE CONNECTION
 
@@ -121,6 +116,11 @@ int main(void) {
 		if (rcount == -1) {
 			// An error occurred
 			fprintf(stderr, "Error printing received data.\n");
+		}
+		else if (rcount == 0) {
+			fprintf(stderr, "Connection closed by client.\n");
+			close(connfd);
+			continue;
 		}
 		else {
 			char **splitmsg;
@@ -136,6 +136,7 @@ int main(void) {
 			char *filename = get_filename(*splitmsg, connfd);
 			if (filename == NULL) {
 				printf("Failure at get_filename. HANDLE ME\n");
+				free(splitmsg);
 				continue;
 			}
 			// DEBUGGING
@@ -146,6 +147,8 @@ int main(void) {
 			int datasize;
 			char *data = read_file(filename, &datasize, connfd);
 			if (data == NULL) {
+				free(splitmsg);
+				free(filename);
 				printf("Failure at read_file.\n");
 				continue;
 			}
@@ -156,6 +159,7 @@ int main(void) {
 			char *extension = strrchr(filename, '.');
 			if (extension == NULL) {
 				fprintf(stderr, "Error reading file extension.");
+				free(splitmsg);
 				free(filename);
 				free(data);
 				continue;
@@ -169,10 +173,15 @@ int main(void) {
 				int success = send_200_response(connfd, data, datasize, extension);
 				if (!success) {
 					fprintf(stderr, "Failed to send 200 response.\n");
+					free(splitmsg);
+					free(filename);
+					free(data);
 					continue;
 				}
 				else printf("200 response sent.\n");
-			
+				free(splitmsg);
+				free(filename);
+				free(data);
 			}
 		
 		}
@@ -284,7 +293,7 @@ int check_hostname(char **splitmsg, int lines, int fd) {
 	if (!found) return 1;
 	
 	int check = 0;
-	// USING HOST_NAME_MAX
+	// USING HOST_NAME_MAX AS 255
 	// SEE THIS ANSWER FROM STACKOVERFLOW
 	// http://stackoverflow.com/a/8724971
 	char hostname[HOST_NAME_MAX + 1];
