@@ -1,3 +1,9 @@
+# gedit stuff
+*~
+
+# Mac stuff
 *.DS_Store
+
+# compiled files
 *.o
 server

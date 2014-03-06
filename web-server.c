@@ -117,11 +117,6 @@ int main(void) {
 			// An error occurred
 			fprintf(stderr, "Error printing received data.\n");
 		}
-		else if (rcount == 0) {
-			fprintf(stderr, "Connection closed by client.\n");
-			close(connfd);
-			continue;
-		}
 		else {
 			char **splitmsg;
 			// DEBUGGING
@@ -136,7 +131,6 @@ int main(void) {
 			char *filename = get_filename(*splitmsg, connfd);
 			if (filename == NULL) {
 				printf("Failure at get_filename. HANDLE ME\n");
-				free(splitmsg);
 				continue;
 			}
 			// DEBUGGING
@@ -147,8 +141,6 @@ int main(void) {
 			int datasize;
 			char *data = read_file(filename, &datasize, connfd);
 			if (data == NULL) {
-				free(splitmsg);
-				free(filename);
 				printf("Failure at read_file.\n");
 				continue;
 			}
@@ -159,9 +151,6 @@ int main(void) {
 			char *extension = strrchr(filename, '.');
 			if (extension == NULL) {
 				fprintf(stderr, "Error reading file extension.");
-				free(splitmsg);
-				free(filename);
-				free(data);
 				continue;
 			}
 			else {
@@ -173,15 +162,9 @@ int main(void) {
 				int success = send_200_response(connfd, data, datasize, extension);
 				if (!success) {
 					fprintf(stderr, "Failed to send 200 response.\n");
-					free(splitmsg);
-					free(filename);
-					free(data);
 					continue;
 				}
 				else printf("200 response sent.\n");
-				free(splitmsg);
-				free(filename);
-				free(data);
 			}
 		
 		}
@@ -204,7 +187,6 @@ int main(void) {
 int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
 	char *current = msg;
-	int msglen = strlen(msg);
 	int linenum = 0;
 	
 	// Check for GET request
@@ -216,9 +198,8 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
 	// COUNTING NUMBER OF LINES //
 	
-	int pos = 0;
 	int endreached = 0;
-	for (; pos<msglen; pos++) {
+	while (current != '\0') {
 		if (!strncmp(current, "\r\n", strlen("\r\n"))) {
 			linenum++;
 			// Consecutive '\r\n' shows end of headers

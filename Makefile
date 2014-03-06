@@ -1,6 +1,6 @@
 CC = gcc
 #CFLAGS = -W -Wall -Werror
-CFLAGS = -W -Wall
+CFLAGS = -W -Wall -g
 	
 server: web-server.o
 	$(CC) -o server web-server.o
