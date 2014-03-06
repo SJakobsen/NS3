@@ -130,6 +130,7 @@ int main(void) {
 		
 			char *filename = get_filename(*splitmsg, connfd);
 			if (filename == NULL) {
+				free(splitmsg);
 				printf("Failure at get_filename. HANDLE ME\n");
 				continue;
 			}
@@ -141,6 +142,8 @@ int main(void) {
 			int datasize;
 			char *data = read_file(filename, &datasize, connfd);
 			if (data == NULL) {
+				free(splitmsg);
+				free(filename);
 				printf("Failure at read_file.\n");
 				continue;
 			}
@@ -150,6 +153,9 @@ int main(void) {
 			// Read file extension in order to send appropriate response
 			char *extension = strrchr(filename, '.');
 			if (extension == NULL) {
+				free(splitmsg);
+				free(filename);
+				free(data);
 				fprintf(stderr, "Error reading file extension.");
 				continue;
 			}
@@ -161,11 +167,19 @@ int main(void) {
 			
 				int success = send_200_response(connfd, data, datasize, extension);
 				if (!success) {
+					free(splitmsg);
+					free(filename);
+					free(data);
 					fprintf(stderr, "Failed to send 200 response.\n");
 					continue;
 				}
 				else printf("200 response sent.\n");
 			}
+
+			
+			free(splitmsg);
+			// free(filename);
+			free(data);
 		
 		}
 		
@@ -241,8 +255,11 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 		
 		**splitmsg = current;
 		int i=1;
+		// Replace strtok with threadsafe strtok_r
+		// Prep for threading
+		char *threadptr = NULL;
 		for(; i<linenum && current != NULL; i++){
-			current = strtok(NULL, "\r\n");
+			current = strtok_r(NULL, "\r\n", &threadptr);
 			*(*splitmsg+i) = current;
 		}
 	
@@ -459,7 +476,7 @@ int send_200_response(int fd, char *data, int datasize, char *extension) {
 	strcat(response, contenttype);
 	
 	int current = strlen(response);
-	memcpy(response+current, data, datasize+1);
+	memcpy(response+current, data, datasize);
 	
 	check = write(fd, response, current+datasize);
 	if (check < 0) {
