@@ -1,5 +1,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,13 +35,23 @@
 // Hence the final header would end with '\r\n\r\n'
 int split_HTTP_message(char *msg, char ***splitmsg, int fd);
 
+// Go through request headers to check hostname is acceptable, return 1/0 if acceptable/not
+int check_hostname(char **splitmsg, int lines, int fd);
+// Parse first line of client request to get filename
 char *get_filename(char *GETline, int fd);
-char *read_file(char *filename, int fd);
+// Attempt to open() filename, read() its contents into a buffer to be returned and keep note of readsize
+char *read_file(char *filename, int *readsize, int fd);
 
-int send_200_response(int fd, char *data, char *extension);
+// Write a response to client based on file type requested and its size
+int send_200_response(int fd, char *data, int datasize, char *extension);
+// Hard-coded error responses
 void send_400_response(int fd);
 void send_404_response(int fd);
 void send_500_response(int fd);
+
+
+
+
 
 int main(void) {
 	
@@ -118,23 +130,23 @@ int main(void) {
 			int linenum = split_HTTP_message(buf, &splitmsg, connfd);
 			if (linenum < 0) {
 				printf("Failure at split_HTTP_message. HANDLE ME\n");
-				close(connfd);
 				continue;
 			}
 		
 			char *filename = get_filename(*splitmsg, connfd);
 			if (filename == NULL) {
 				printf("Failure at get_filename. HANDLE ME\n");
-				close(connfd);
 				continue;
 			}
 			// DEBUGGING
 			// printf("Parsed file: %s\n", filename);
-		
-			char *data = read_file(filename, connfd);
+			
+			// Varaiable to store file size.
+			// For the event where data is not text and strlen(data) would not work
+			int datasize;
+			char *data = read_file(filename, &datasize, connfd);
 			if (data == NULL) {
-				printf("Failure at read_file. HANDLE ME\n");
-				close(connfd);
+				printf("Failure at read_file.\n");
 				continue;
 			}
 			// DEBUGGING
@@ -146,7 +158,6 @@ int main(void) {
 				fprintf(stderr, "Error reading file extension.");
 				free(filename);
 				free(data);
-				send_400_response(connfd);
 				continue;
 			}
 			else {
@@ -155,7 +166,7 @@ int main(void) {
 				// DEBUGGING
 				printf("Extension: %s\n", extension);
 			
-				int success = send_200_response(connfd, data, extension);
+				int success = send_200_response(connfd, data, datasize, extension);
 				if (!success) {
 					fprintf(stderr, "Failed to send 200 response.\n");
 					continue;
@@ -174,6 +185,12 @@ int main(void) {
 	return 0;
 	
 }
+
+
+
+
+
+// MY HELPER FUNCTIONS //
 
 int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 	
@@ -361,59 +378,58 @@ char *get_filename(char *GETline, int fd) {
 	return filename;
 }
 
-char *read_file(char *filename, int fd) {
-	FILE *file;
+char *read_file(char *filename, int *readsize, int fd) {
 	char *data;
-	unsigned long size;		// Size of file being requested
-	size_t check;			// Size of read
+	struct stat	fs;			// From assignment description to get file size
 	
+	// Open file
 	// This will look for files in same directory as the server, assuming server is compiled into same directory as .c file
-	// Reading as a binary file, hence 'rb' (file could be image etc.)
-	file = fopen(filename, "rb");
-	// Handle fail case (404 error)
-	if (file == NULL) {
-		perror("");
+	int file = open(filename, O_RDONLY);
+	if (file == -1) {
 		fprintf(stderr, "Error opening %s\n", filename);
 		send_404_response(fd);
 		return NULL;
 	}
-	
-	// obtain file size
-	// taken from example at http://www.cplusplus.com/reference/cstdio/fread/
-	fseek(file , 0 , SEEK_END);
-	size = ftell(file);
-	rewind(file);
+	// Get size
+	if (fstat(file, &fs) == -1) {
+		fprintf(stderr, "Error getting file size.\n");
+		close(file);
+		send_500_response(fd);
+	}
+	// DEBUGGING
+	printf("file size = %lld\n", fs.st_size);
 	
 	// Allocate space for file data
-	data = malloc(sizeof(char) * (size + 1));
+	data = malloc(sizeof(char) * (fs.st_size + 1));
 	// Handle fail case
 	if (data == NULL) {
 		fprintf(stderr, "Error allocating space for data to be written.\n");
-		fclose(file);
+		close(file);
 		free(data);
 		send_500_response(fd);
 		return NULL;
 	}
 	
-	// Read data from file into data buffer
-	check = fread (data, sizeof(char), size, file);
-	// Handle misread
-	if (check != size) {
+	// Read file data into buffer
+	*readsize = read(file, data, fs.st_size);
+	if (*readsize != fs.st_size) {
 		fprintf(stderr, "Error reading from file.\n");
-		fclose(file);
+		close(file);
 		free(data);
 		send_500_response(fd);
 		return NULL;
 	}
 	
-	fclose(file);
+	// DEBUGGING
+	printf("read size: %d\n", *readsize);
+	
+	close(file);
 	return data;
 }
 
 // HTTP RESPONSES //
 
-int send_200_response(int fd, char *data, char *extension) {
-	int size;
+int send_200_response(int fd, char *data, int datasize, char *extension) {
 	int check;
 	char *contentlength;
 	char *contenttype;
@@ -426,8 +442,7 @@ int send_200_response(int fd, char *data, char *extension) {
 		return 0;
 	}
 	
-	size = strlen(data);
-	check = sprintf(contentlength, "Content-Length: %i\r\n", size);
+	check = sprintf(contentlength, "Content-Length: %i\r\n", datasize);
 	
 	if (!strncmp(extension, "html", 4)) contenttype = "Content-Type: text/html\r\n\r\n";
 	else if (!strncmp(extension, "htm", 3)) contenttype = "Content-Type: text/html\r\n\r\n";
@@ -440,7 +455,7 @@ int send_200_response(int fd, char *data, char *extension) {
 	printf("Content length header: %s", contentlength);
 	printf("Content type header: %s", contenttype);
 	
-	char *response = malloc(sizeof(RESPONSE_200_HEADER) + sizeof(contentlength) + sizeof(contenttype) + size);
+	char *response = malloc(sizeof(RESPONSE_200_HEADER) + sizeof(contentlength) + sizeof(contenttype) + datasize);
 	if (response == NULL) {
 		fprintf(stderr, "Error allocating space for HTTP 200 Response.");
 		free(contentlength);
@@ -454,9 +469,9 @@ int send_200_response(int fd, char *data, char *extension) {
 	strcat(response, contenttype);
 	
 	int current = strlen(response);
-	memcpy(response+current, data, size+1);
+	memcpy(response+current, data, datasize+1);
 	
-	check = write(fd, response, current+size);
+	check = write(fd, response, current+datasize);
 	if (check < 0) {
 		fprintf(stderr, "Error sending 200 response.");
 		free(contentlength);
