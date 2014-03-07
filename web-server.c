@@ -1,3 +1,6 @@
+//// NS3 Assessed Exercise 2 ////
+///// Sean Jakobsen 1102140 /////
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -10,6 +13,7 @@
 
 // PORT that the server will listen to
 #define PORT 8080
+// Domain that server will be running on in the university
 
 // Max message size that the server will accept
 #define BUFLEN 1500
@@ -37,7 +41,7 @@
 int split_HTTP_message(char *msg, char ***splitmsg, int fd);
 
 // Go through request headers to check hostname is acceptable, return 1/0 if acceptable/not
-int check_hostname(char **splitmsg, int lines, int fd);
+int valid_hostname(char **splitmsg, int lines, int fd);
 // Parse first line of client request to get filename
 char *get_filename(char *GETline, int fd);
 // Attempt to open() filename, read() its contents into a buffer to be returned and keep note of readsize
@@ -254,9 +258,8 @@ int split_HTTP_message(char *msg, char ***splitmsg, int fd) {
 		}
 		
 		**splitmsg = current;
-		int i=1;
-		// Replace strtok with threadsafe strtok_r
-		// Prep for threading
+		int i=2;
+		// Replacing strtok with threadsafe strtok_r in prep for threading
 		char *threadptr = NULL;
 		for(; i<linenum && current != NULL; i++){
 			current = strtok_r(NULL, "\r\n", &threadptr);
@@ -272,7 +275,7 @@ int get_file(char *line) {
 }
 */
 
-int check_hostname(char **splitmsg, int lines, int fd) {
+int valid_hostname(char **splitmsg, int lines, int fd) {
 	
 	// Go through each line looking for "host: "
 	char *line;
